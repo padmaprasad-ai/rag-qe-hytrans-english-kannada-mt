@@ -1,0 +1,61 @@
+dataset:
+  name: ai4bharat/samanantar
+  config: kn
+  split: train
+  max_samples: 50000
+  source_column: src
+  target_column: tgt
+
+language:
+  source_lang_code: eng_Latn
+  target_lang_code: kan_Knda
+
+data_split:
+  train_ratio: 0.80
+  validation_ratio: 0.10
+  test_ratio: 0.10
+
+preprocessing:
+  min_source_chars: 2
+  min_target_chars: 2
+  max_source_chars: 500
+  max_target_chars: 500
+  min_source_words: 2
+  min_target_words: 1
+  max_source_words: 100
+  max_target_words: 120
+  max_length_ratio: 3.0
+  enable_kannada_script_filter: true
+
+model:
+  baseline_model: facebook/nllb-200-distilled-600M
+  max_source_length: 128
+  max_target_length: 128
+
+lora:
+  rank: 8
+  alpha: 16
+  dropout: 0.05
+  learning_rate: 0.0002
+  train_epochs: 2
+  train_batch_size: 1
+  gradient_accumulation_steps: 8
+  eval_batch_size: 1
+  max_valid_samples: 1000
+
+retriever:
+  embedding_model: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+  embedding_dimension: 384
+  backend: faiss
+  index_type: IndexFlatIP
+  batch_size: 128
+
+rag:
+  fixed_threshold: 0.70
+  threshold_list: [0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 0.98, 0.99]
+  validation_selected_threshold_50k: 0.98
+
+quality_aware:
+  min_retrieval_similarity: 0.90
+  margin_list: [-0.05, 0.00, 0.03, 0.05, 0.07, 0.10, 0.15, 0.20]
+  validation_selected_margin_50k: 0.10

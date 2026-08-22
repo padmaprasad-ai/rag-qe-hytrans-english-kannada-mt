@@ -1,0 +1,13 @@
+torch
+transformers
+datasets
+sentence-transformers
+sacrebleu
+pandas
+numpy
+tqdm
+scikit-learn
+faiss-cpu
+peft
+accelerate
+matplotlib

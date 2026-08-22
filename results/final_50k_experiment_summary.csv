@@ -1,0 +1,7 @@
+method,category,setting,test_sentences,BLEU,chrF++,retrieval_selected,lora_or_nmt_selected,BLEU_change_vs_baseline,chrF++_change_vs_baseline,BLEU_change_vs_lora,chrF++_change_vs_lora
+Baseline NLLB,Final baseline,-,4956,9.6481,37.6486,0,4956,0.0000,0.0000,,
+LoRA-NLLB,Final adapted model,-,4956,10.2429,37.9050,0,4956,0.5948,0.2564,0.0000,0.0000
+RAG-Hybrid,Fixed-threshold ablation,threshold=0.70,4956,7.6484,31.4821,2907,2049,-1.9997,-6.1665,-2.5945,-6.4229
+RAG-Hybrid,Test-set sensitivity best,threshold=0.99,4956,10.2833,37.8653,231,4725,0.6352,0.2167,0.0404,-0.0397
+Validation-Selected RAG-Hybrid,Final RAG result,threshold=0.98,4956,10.2716,37.8415,250,4706,0.6235,0.1929,0.0287,-0.0635
+Quality-Aware Hybrid,Final QE-style hybrid,margin=0.10,4956,10.2242,37.8886,12,4944,0.5761,0.2400,-0.0187,-0.0164

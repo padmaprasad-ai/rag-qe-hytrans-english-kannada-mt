@@ -1,0 +1,7 @@
+method,category,test_sentences,BLEU,chrF++,retrieval_selected,lora_or_nmt_selected
+Baseline NLLB,Final baseline,494,8.1715,37.7637,0,494
+LoRA-NLLB,Final adapted model,494,8.2766,37.5986,0,494
+RAG-Hybrid 0.70,Fixed-threshold ablation,494,7.5580,35.2643,113,381
+RAG-Hybrid 0.85,Test-set sensitivity only,494,8.3640,37.5301,12,482
+Validation-Selected RAG 0.95,Final RAG result,494,8.2656,37.5855,2,492
+Quality-Aware Hybrid,Final QE-style hybrid,494,8.2804,37.5606,6,488
