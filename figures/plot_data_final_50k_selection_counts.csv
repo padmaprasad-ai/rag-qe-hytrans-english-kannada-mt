@@ -1,0 +1,5 @@
+hybrid_model,retrieval_selected,lora_selected
+RAG 0.70,2907,2049
+Test-best RAG 0.99,231,4725
+Validation RAG 0.98,250,4706
+Quality-aware Hybrid,12,4944

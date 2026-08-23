@@ -1,0 +1,7 @@
+method,BLEU,chrF++
+Baseline NLLB,9.6481,37.6486
+LoRA NLLB,10.2429,37.905
+RAG 0.70,7.6484,31.4821
+Test-best RAG 0.99,10.2833,37.8653
+Validation RAG 0.98,10.2716,37.8415
+Quality-aware Hybrid,10.2242,37.8886
