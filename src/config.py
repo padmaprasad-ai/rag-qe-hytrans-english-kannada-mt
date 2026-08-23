@@ -406,3 +406,22 @@ LORA_SAVE_TOTAL_LIMIT_50K
 LORA_LOGGING_STEPS_50K
 LORA_TRAINING_REPORT_50K
 RETRIEVER_TEST_TOP_K_50K
+
+# ==============================
+# 50K LoRA translation and evaluation
+# ==============================
+
+LORA_TRANSLATION_FILE_50K = OUTPUT_DIR / "lora_50k_translations.csv"
+LORA_EVALUATION_REPORT_50K = OUTPUT_DIR / "lora_50k_evaluation_report.json"
+LORA_SENTENCE_SCORES_50K = OUTPUT_DIR / "lora_50k_sentence_scores.csv"
+
+BASELINE_VS_LORA_REPORT_50K = OUTPUT_DIR / "baseline_vs_lora_50k_report.json"
+BASELINE_VS_LORA_SENTENCE_SCORES_50K = OUTPUT_DIR / "baseline_vs_lora_50k_sentence_scores.csv"
+
+LORA_TRANSLATION_BATCH_SIZE_50K = 4
+
+# For debugging, use 100.
+# For final experiment, set None.
+LORA_TEST_LIMIT_50K = None
+
+SAVE_EVERY_BATCH_LORA_50K = True
