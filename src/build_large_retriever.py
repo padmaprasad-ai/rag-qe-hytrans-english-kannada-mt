@@ -1,4 +1,4 @@
-# src/build_retriever_50k.py
+# src/build_large_retriever.py
 
 import pickle
 import numpy as np
@@ -8,15 +8,15 @@ from sentence_transformers import SentenceTransformer
 from sklearn.neighbors import NearestNeighbors
 
 from src.config import (
-    TRAIN_FILE_50K,
-    TEST_FILE_50K,
-    RETRIEVER_DIR_50K,
-    FAISS_INDEX_FILE_50K,
-    MEMORY_FILE_50K,
-    SKLEARN_INDEX_FILE_50K,
-    RETRIEVER_EMBEDDING_MODEL_50K,
-    RETRIEVER_BATCH_SIZE_50K,
-    RETRIEVER_MAX_ROWS_50K,
+    TRAIN_LARGE_FILE,
+    TEST_LARGE_FILE,
+    LARGE_RETRIEVER_DIR,
+    LARGE_FAISS_INDEX_FILE,
+    LARGE_MEMORY_FILE,
+    LARGE_SKLEARN_INDEX_FILE,
+    LARGE_RETRIEVER_EMBEDDING_MODEL,
+    LARGE_RETRIEVER_BATCH_SIZE,
+    LARGE_RETRIEVER_MAX_ROWS,
     create_directories,
 )
 
@@ -27,24 +27,27 @@ except ImportError:
     FAISS_AVAILABLE = False
 
 
-class TranslationMemoryRetriever50K:
+class LargeTranslationMemoryRetriever:
     """
-    Builds and loads a 50K-scale semantic translation-memory retriever.
+    Large-data Translation Memory Retriever.
+
+    This module builds a semantic retrieval index from train_large.csv.
+    It supports FAISS when available and falls back to Scikit-learn otherwise.
 
     Input:
-        data/processed/train_50k.csv
+        data/processed/train_large.csv
 
-    Outputs:
-        models/retriever_50k/tm_50k_memory.pkl
-        models/retriever_50k/tm_50k_faiss.index
+    Output:
+        models/large_retriever/large_tm_memory.pkl
+        models/large_retriever/large_tm_faiss.index
         or
-        models/retriever_50k/tm_50k_sklearn_retriever.pkl
+        models/large_retriever/large_sklearn_retriever.pkl
     """
 
     def __init__(
         self,
-        model_name: str = RETRIEVER_EMBEDDING_MODEL_50K,
-        batch_size: int = RETRIEVER_BATCH_SIZE_50K,
+        model_name: str = LARGE_RETRIEVER_EMBEDDING_MODEL,
+        batch_size: int = LARGE_RETRIEVER_BATCH_SIZE,
     ):
         self.model_name = model_name
         self.batch_size = batch_size
@@ -56,11 +59,11 @@ class TranslationMemoryRetriever50K:
         self.memory_df = None
         self.embeddings = None
 
-    def load_training_memory(self, train_file: Path = TRAIN_FILE_50K) -> pd.DataFrame:
+    def load_training_memory(self, train_file: Path = TRAIN_LARGE_FILE) -> pd.DataFrame:
         if not train_file.exists():
             raise FileNotFoundError(
-                f"50K training file not found:\n{train_file}\n\n"
-                "Please run Step 26 first: run_prepare_split_50k.py"
+                f"Large training file not found:\n{train_file}\n\n"
+                "Please run Step 12 first: run_large_data_split.py"
             )
 
         df = pd.read_csv(train_file, encoding="utf-8-sig")
@@ -89,29 +92,29 @@ class TranslationMemoryRetriever50K:
         df = df[df["source_text"].str.len() > 0]
         df = df[df["target_text"].str.len() > 0]
 
-        if RETRIEVER_MAX_ROWS_50K is not None:
-            df = df.head(int(RETRIEVER_MAX_ROWS_50K)).copy()
+        if LARGE_RETRIEVER_MAX_ROWS is not None:
+            df = df.head(int(LARGE_RETRIEVER_MAX_ROWS)).copy()
 
         if len(df) == 0:
-            raise ValueError("No valid training rows found for 50K retriever.")
+            raise ValueError("No valid sentence pairs found in train_large.csv.")
 
         return df.reset_index(drop=True)
 
     def build_index(self):
         create_directories()
-        RETRIEVER_DIR_50K.mkdir(parents=True, exist_ok=True)
+        LARGE_RETRIEVER_DIR.mkdir(parents=True, exist_ok=True)
 
-        self.memory_df = self.load_training_memory(TRAIN_FILE_50K)
+        self.memory_df = self.load_training_memory(TRAIN_LARGE_FILE)
 
-        print("Step 27: Building 50K translation-memory retriever.")
+        print("Large translation memory building started.")
         print(f"Training pairs used : {len(self.memory_df)}")
         print(f"Embedding model     : {self.model_name}")
         print(f"Batch size          : {self.batch_size}")
-        print(f"Backend             : {self.backend}")
+        print(f"Retriever backend   : {self.backend}")
 
         source_sentences = self.memory_df["source_text"].tolist()
 
-        print("\nEncoding 50K training source sentences...")
+        print("\nEncoding source sentences...")
 
         embeddings = self.encoder.encode(
             source_sentences,
@@ -128,7 +131,6 @@ class TranslationMemoryRetriever50K:
 
         if self.backend == "faiss":
             dimension = embeddings.shape[1]
-
             self.index = faiss.IndexFlatIP(dimension)
             self.index.add(embeddings)
 
@@ -140,7 +142,6 @@ class TranslationMemoryRetriever50K:
                 metric="cosine",
                 algorithm="brute",
             )
-
             self.index.fit(embeddings)
 
             print("Scikit-learn NearestNeighbors index built successfully.")
@@ -149,7 +150,7 @@ class TranslationMemoryRetriever50K:
         if self.index is None or self.memory_df is None or self.embeddings is None:
             raise RuntimeError("Index is not built. Run build_index() first.")
 
-        RETRIEVER_DIR_50K.mkdir(parents=True, exist_ok=True)
+        LARGE_RETRIEVER_DIR.mkdir(parents=True, exist_ok=True)
 
         memory_data = {
             "backend": self.backend,
@@ -158,31 +159,31 @@ class TranslationMemoryRetriever50K:
             "embeddings": self.embeddings,
         }
 
-        with open(MEMORY_FILE_50K, "wb") as file:
+        with open(LARGE_MEMORY_FILE, "wb") as file:
             pickle.dump(memory_data, file)
 
         if self.backend == "faiss":
-            faiss.write_index(self.index, str(FAISS_INDEX_FILE_50K))
+            faiss.write_index(self.index, str(LARGE_FAISS_INDEX_FILE))
         else:
-            with open(SKLEARN_INDEX_FILE_50K, "wb") as file:
+            with open(LARGE_SKLEARN_INDEX_FILE, "wb") as file:
                 pickle.dump(self.index, file)
 
-        print("\n50K retriever saved successfully.")
-        print(f"Memory file: {MEMORY_FILE_50K}")
+        print("\nLarge retriever saved successfully.")
+        print(f"Memory file: {LARGE_MEMORY_FILE}")
 
         if self.backend == "faiss":
-            print(f"FAISS index: {FAISS_INDEX_FILE_50K}")
+            print(f"FAISS index: {LARGE_FAISS_INDEX_FILE}")
         else:
-            print(f"Sklearn index: {SKLEARN_INDEX_FILE_50K}")
+            print(f"Sklearn index: {LARGE_SKLEARN_INDEX_FILE}")
 
     def load(self):
-        if not MEMORY_FILE_50K.exists():
+        if not LARGE_MEMORY_FILE.exists():
             raise FileNotFoundError(
-                f"50K memory file not found:\n{MEMORY_FILE_50K}\n\n"
-                "Please build the 50K retriever first."
+                f"Large memory file not found:\n{LARGE_MEMORY_FILE}\n\n"
+                "Please build the large retriever first."
             )
 
-        with open(MEMORY_FILE_50K, "rb") as file:
+        with open(LARGE_MEMORY_FILE, "rb") as file:
             memory_data = pickle.load(file)
 
         self.backend = memory_data["backend"]
@@ -193,19 +194,19 @@ class TranslationMemoryRetriever50K:
         self.encoder = SentenceTransformer(self.model_name)
 
         if self.backend == "faiss":
-            if not FAISS_INDEX_FILE_50K.exists():
-                raise FileNotFoundError(f"FAISS index file not found:\n{FAISS_INDEX_FILE_50K}")
+            if not LARGE_FAISS_INDEX_FILE.exists():
+                raise FileNotFoundError(f"FAISS index file not found:\n{LARGE_FAISS_INDEX_FILE}")
 
-            self.index = faiss.read_index(str(FAISS_INDEX_FILE_50K))
+            self.index = faiss.read_index(str(LARGE_FAISS_INDEX_FILE))
 
         else:
-            if not SKLEARN_INDEX_FILE_50K.exists():
-                raise FileNotFoundError(f"Sklearn index file not found:\n{SKLEARN_INDEX_FILE_50K}")
+            if not LARGE_SKLEARN_INDEX_FILE.exists():
+                raise FileNotFoundError(f"Sklearn index file not found:\n{LARGE_SKLEARN_INDEX_FILE}")
 
-            with open(SKLEARN_INDEX_FILE_50K, "rb") as file:
+            with open(LARGE_SKLEARN_INDEX_FILE, "rb") as file:
                 self.index = pickle.load(file)
 
-        print("50K retriever loaded successfully.")
+        print("Large retriever loaded successfully.")
 
     def retrieve(self, query: str, top_k: int = 5):
         if self.index is None or self.memory_df is None:
@@ -260,18 +261,18 @@ class TranslationMemoryRetriever50K:
         return results
 
 
-def test_retriever_50k(retriever: TranslationMemoryRetriever50K):
-    print("\nTesting 50K retriever...")
-
-    if TEST_FILE_50K.exists():
-        test_df = pd.read_csv(TEST_FILE_50K, encoding="utf-8-sig")
+def test_large_retriever(retriever: LargeTranslationMemoryRetriever):
+    if TEST_LARGE_FILE.exists():
+        test_df = pd.read_csv(TEST_LARGE_FILE, encoding="utf-8-sig")
         sample_queries = test_df["source_text"].dropna().astype(str).head(3).tolist()
     else:
         sample_queries = [
+            "How are you?",
             "The government announced a new policy.",
-            "Several trains were cancelled because of rain.",
-            "The patient was admitted to the hospital.",
+            "The patient has fever.",
         ]
+
+    print("\nTesting large retriever...")
 
     for query in sample_queries:
         results = retriever.retrieve(query, top_k=3)
@@ -287,12 +288,12 @@ def test_retriever_50k(retriever: TranslationMemoryRetriever50K):
             print(f"Domain    : {item['domain']}")
 
 
-def run_build_retriever_50k():
-    retriever = TranslationMemoryRetriever50K()
+def run_large_retriever_build():
+    retriever = LargeTranslationMemoryRetriever()
     retriever.build_index()
     retriever.save()
-    test_retriever_50k(retriever)
+    test_large_retriever(retriever)
 
 
 if __name__ == "__main__":
-    run_build_retriever_50k()
+    run_large_retriever_build()

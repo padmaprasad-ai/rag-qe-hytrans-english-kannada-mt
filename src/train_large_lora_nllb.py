@@ -1,4 +1,4 @@
-# src/train_lora_50k_nllb.py
+# src/train_large_lora_nllb.py
 
 import numpy as np
 import pandas as pd
@@ -17,31 +17,30 @@ from transformers import (
 from peft import LoraConfig, get_peft_model, TaskType
 
 from src.config import (
-    TRAIN_FILE_50K,
-    VALID_FILE_50K,
+    TRAIN_LARGE_FILE,
+    VALID_LARGE_FILE,
     BASELINE_MODEL_NAME,
     SOURCE_LANG_CODE,
     TARGET_LANG_CODE,
     MAX_SOURCE_LENGTH,
     MAX_TARGET_LENGTH,
-    LORA_MODEL_DIR_50K,
-    LORA_ADAPTER_DIR_50K,
-    LORA_TRAIN_EPOCHS_50K,
-    LORA_TRAIN_BATCH_SIZE_50K,
-    LORA_EVAL_BATCH_SIZE_50K,
-    LORA_GRADIENT_ACCUMULATION_STEPS_50K,
-    LORA_LEARNING_RATE_50K,
-    LORA_MAX_TRAIN_SAMPLES_50K,
-    LORA_MAX_VALID_SAMPLES_50K,
-    LORA_R_50K,
-    LORA_ALPHA_50K,
-    LORA_DROPOUT_50K,
-    LORA_TRAINING_LOG_DIR_50K,
+    LARGE_LORA_MODEL_DIR,
+    LARGE_LORA_ADAPTER_DIR,
+    LARGE_LORA_TRAIN_EPOCHS,
+    LARGE_LORA_TRAIN_BATCH_SIZE,
+    LARGE_LORA_EVAL_BATCH_SIZE,
+    LARGE_LORA_GRADIENT_ACCUMULATION_STEPS,
+    LARGE_LORA_LEARNING_RATE,
+    LARGE_LORA_MAX_TRAIN_SAMPLES,
+    LARGE_LORA_MAX_VALID_SAMPLES,
+    LORA_R,
+    LORA_ALPHA,
+    LORA_DROPOUT,
     create_directories,
 )
 
 
-def load_50k_dataset(csv_file, max_samples=None):
+def load_large_dataset(csv_file, max_samples=None):
     if not csv_file.exists():
         raise FileNotFoundError(f"File not found: {csv_file}")
 
@@ -70,41 +69,50 @@ def load_50k_dataset(csv_file, max_samples=None):
     return Dataset.from_pandas(df.reset_index(drop=True))
 
 
-def apply_lora_to_model_50k(model):
+def apply_lora_to_model(model):
+    """
+    Applies LoRA adapters to the NLLB seq2seq model.
+    """
+
     lora_config = LoraConfig(
         task_type=TaskType.SEQ_2_SEQ_LM,
-        r=LORA_R_50K,
-        lora_alpha=LORA_ALPHA_50K,
-        lora_dropout=LORA_DROPOUT_50K,
+        r=LORA_R,
+        lora_alpha=LORA_ALPHA,
+        lora_dropout=LORA_DROPOUT,
         target_modules=["q_proj", "v_proj"],
         bias="none",
     )
 
     model = get_peft_model(model, lora_config)
 
-    print("\n50K LoRA configuration applied.")
+    print("\nLoRA configuration applied.")
     model.print_trainable_parameters()
 
     return model
 
 
-def build_training_args_50k(device):
+def build_training_args(device):
+    """
+    Handles version differences in Transformers:
+    some versions use eval_strategy, older versions use evaluation_strategy.
+    """
+
     common_args = dict(
-        output_dir=str(LORA_MODEL_DIR_50K),
+        output_dir=str(LARGE_LORA_MODEL_DIR),
         save_strategy="epoch",
-        learning_rate=LORA_LEARNING_RATE_50K,
-        per_device_train_batch_size=LORA_TRAIN_BATCH_SIZE_50K,
-        per_device_eval_batch_size=LORA_EVAL_BATCH_SIZE_50K,
-        gradient_accumulation_steps=LORA_GRADIENT_ACCUMULATION_STEPS_50K,
+        learning_rate=LARGE_LORA_LEARNING_RATE,
+        per_device_train_batch_size=LARGE_LORA_TRAIN_BATCH_SIZE,
+        per_device_eval_batch_size=LARGE_LORA_EVAL_BATCH_SIZE,
+        gradient_accumulation_steps=LARGE_LORA_GRADIENT_ACCUMULATION_STEPS,
         weight_decay=0.01,
         save_total_limit=2,
-        num_train_epochs=LORA_TRAIN_EPOCHS_50K,
+        num_train_epochs=LARGE_LORA_TRAIN_EPOCHS,
         predict_with_generate=True,
         generation_max_length=MAX_TARGET_LENGTH,
         generation_num_beams=4,
         fp16=True if device == "cuda" else False,
-        logging_dir=str(LORA_TRAINING_LOG_DIR_50K),
-        logging_steps=50,
+        logging_dir="outputs/large_lora_training_logs",
+        logging_steps=25,
         report_to="none",
     )
 
@@ -120,40 +128,35 @@ def build_training_args_50k(device):
         )
 
 
-def train_lora_50k_nllb():
+def train_large_lora_nllb():
     create_directories()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    print("Step 29: 50K LoRA fine-tuning started.")
+    print("Step 15: Large-data LoRA fine-tuning started.")
     print(f"Base model      : {BASELINE_MODEL_NAME}")
     print(f"Device selected : {device}")
     print(f"Source language : {SOURCE_LANG_CODE}")
     print(f"Target language : {TARGET_LANG_CODE}")
-    print(f"Train file      : {TRAIN_FILE_50K}")
-    print(f"Valid file      : {VALID_FILE_50K}")
 
     if device == "cpu":
         print(
             "\nWARNING: CUDA GPU not detected. "
-            "50K LoRA training on CPU may take a very long time. "
-            "Use Google Colab GPU/Kaggle GPU/institutional GPU for the final run.\n"
+            "LoRA training will still work, but it may take considerable time on CPU.\n"
         )
 
-    train_dataset = load_50k_dataset(
-        TRAIN_FILE_50K,
-        max_samples=LORA_MAX_TRAIN_SAMPLES_50K,
+    train_dataset = load_large_dataset(
+        TRAIN_LARGE_FILE,
+        max_samples=LARGE_LORA_MAX_TRAIN_SAMPLES,
     )
 
-    valid_dataset = load_50k_dataset(
-        VALID_FILE_50K,
-        max_samples=LORA_MAX_VALID_SAMPLES_50K,
+    valid_dataset = load_large_dataset(
+        VALID_LARGE_FILE,
+        max_samples=LARGE_LORA_MAX_VALID_SAMPLES,
     )
 
     print(f"Training records used   : {len(train_dataset)}")
     print(f"Validation records used : {len(valid_dataset)}")
-    print(f"Epochs                  : {LORA_TRAIN_EPOCHS_50K}")
-    print(f"Gradient accumulation   : {LORA_GRADIENT_ACCUMULATION_STEPS_50K}")
 
     tokenizer = AutoTokenizer.from_pretrained(
         BASELINE_MODEL_NAME,
@@ -161,14 +164,7 @@ def train_lora_50k_nllb():
     )
 
     model = AutoModelForSeq2SeqLM.from_pretrained(BASELINE_MODEL_NAME)
-
-    try:
-        model.gradient_checkpointing_enable()
-        print("Gradient checkpointing enabled.")
-    except Exception:
-        print("Gradient checkpointing not enabled for this model/version.")
-
-    model = apply_lora_to_model_50k(model)
+    model = apply_lora_to_model(model)
     model.to(device)
 
     forced_bos_token_id = tokenizer.convert_tokens_to_ids(TARGET_LANG_CODE)
@@ -194,10 +190,9 @@ def train_lora_50k_nllb():
         )
 
         model_inputs["labels"] = labels["input_ids"]
-
         return model_inputs
 
-    print("\nTokenizing 50K LoRA training data...")
+    print("\nTokenizing large training dataset...")
 
     tokenized_train = train_dataset.map(
         preprocess_function,
@@ -246,7 +241,7 @@ def train_lora_50k_nllb():
         model=model,
     )
 
-    training_args = build_training_args_50k(device)
+    training_args = build_training_args(device)
 
     try:
         trainer = Seq2SeqTrainer(
@@ -269,21 +264,21 @@ def train_lora_50k_nllb():
             compute_metrics=compute_metrics,
         )
 
-    print("\nStarting 50K LoRA fine-tuning...")
+    print("\nStarting large LoRA fine-tuning...")
     trainer.train()
 
-    print("\nSaving 50K LoRA adapter and tokenizer...")
+    print("\nSaving LoRA adapter and tokenizer...")
 
-    LORA_MODEL_DIR_50K.mkdir(parents=True, exist_ok=True)
-    LORA_ADAPTER_DIR_50K.mkdir(parents=True, exist_ok=True)
+    LARGE_LORA_MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    LARGE_LORA_ADAPTER_DIR.mkdir(parents=True, exist_ok=True)
 
-    model.save_pretrained(str(LORA_ADAPTER_DIR_50K))
-    tokenizer.save_pretrained(str(LORA_MODEL_DIR_50K))
+    model.save_pretrained(str(LARGE_LORA_ADAPTER_DIR))
+    tokenizer.save_pretrained(str(LARGE_LORA_MODEL_DIR))
 
-    print("\n50K LoRA fine-tuning completed successfully.")
-    print(f"LoRA adapter saved at : {LORA_ADAPTER_DIR_50K}")
-    print(f"Tokenizer saved at    : {LORA_MODEL_DIR_50K}")
+    print("\nLarge-data LoRA fine-tuning completed successfully.")
+    print(f"LoRA adapter saved at : {LARGE_LORA_ADAPTER_DIR}")
+    print(f"Tokenizer saved at    : {LARGE_LORA_MODEL_DIR}")
 
 
 if __name__ == "__main__":
-    train_lora_50k_nllb()
+    train_large_lora_nllb()
