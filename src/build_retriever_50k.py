@@ -1,15 +1,17 @@
 # src/build_retriever_50k.py
 
+import json
 import pickle
+import time
+
+import faiss
 import numpy as np
 import pandas as pd
-from pathlib import Path
 from sentence_transformers import SentenceTransformer
 from sklearn.neighbors import NearestNeighbors
 
 from src.config import (
     TRAIN_FILE_50K,
-    TEST_FILE_50K,
     RETRIEVER_DIR_50K,
     FAISS_INDEX_FILE_50K,
     MEMORY_FILE_50K,
@@ -17,281 +19,305 @@ from src.config import (
     RETRIEVER_EMBEDDING_MODEL_50K,
     RETRIEVER_BATCH_SIZE_50K,
     RETRIEVER_MAX_ROWS_50K,
+    OUTPUT_DIR,
     create_directories,
 )
 
-try:
-    import faiss
-    FAISS_AVAILABLE = True
-except ImportError:
-    FAISS_AVAILABLE = False
+
+# This value was used only for sample retrieval inspection.
+# It is kept local because the original config.py does not define it.
+RETRIEVER_TEST_TOP_K_50K = 3
 
 
-class TranslationMemoryRetriever50K:
+class BuildRetriever50K:
     """
-    Builds and loads a 50K-scale semantic translation-memory retriever.
+    Builds the 50K FAISS-based translation-memory retriever.
 
     Input:
         data/processed/train_50k.csv
 
     Outputs:
-        models/retriever_50k/tm_50k_memory.pkl
         models/retriever_50k/tm_50k_faiss.index
-        or
+        models/retriever_50k/tm_50k_memory.pkl
         models/retriever_50k/tm_50k_sklearn_retriever.pkl
+        outputs/build_retriever_50k_log.json
     """
 
-    def __init__(
-        self,
-        model_name: str = RETRIEVER_EMBEDDING_MODEL_50K,
-        batch_size: int = RETRIEVER_BATCH_SIZE_50K,
-    ):
-        self.model_name = model_name
-        self.batch_size = batch_size
-        self.backend = "faiss" if FAISS_AVAILABLE else "sklearn"
+    def __init__(self):
+        self.build_log_file = OUTPUT_DIR / "build_retriever_50k_log.json"
 
-        self.encoder = SentenceTransformer(self.model_name)
+        self.train_df = None
+        self.source_texts = []
+        self.target_texts = []
+        self.domains = []
 
-        self.index = None
-        self.memory_df = None
         self.embeddings = None
+        self.embedding_dim = None
 
-    def load_training_memory(self, train_file: Path = TRAIN_FILE_50K) -> pd.DataFrame:
-        if not train_file.exists():
+        self.faiss_index = None
+        self.sklearn_index = None
+
+        self.total_pairs = 0
+        self.runtime_seconds = 0.0
+
+    def load_training_data(self):
+        if not TRAIN_FILE_50K.exists():
             raise FileNotFoundError(
-                f"50K training file not found:\n{train_file}\n\n"
-                "Please run Step 26 first: run_prepare_split_50k.py"
+                f"50K training file not found:\n{TRAIN_FILE_50K}\n\n"
+                "Please run Step 26 first: prepare_split_50k.py"
             )
 
-        df = pd.read_csv(train_file, encoding="utf-8-sig")
+        print("Loading 50K training data...")
+        print(f"Input file: {TRAIN_FILE_50K}")
 
-        required_columns = [
-            "source_text",
-            "target_text",
-            "domain",
-            "source_lang",
-            "target_lang",
-        ]
+        df = pd.read_csv(TRAIN_FILE_50K, encoding="utf-8-sig")
 
-        missing_columns = [col for col in required_columns if col not in df.columns]
+        required_columns = ["source_text", "target_text"]
+        missing = [col for col in required_columns if col not in df.columns]
 
-        if missing_columns:
+        if missing:
             raise ValueError(
-                f"Missing required columns: {missing_columns}\n"
+                f"Missing required columns: {missing}\n"
                 f"Detected columns: {list(df.columns)}"
             )
 
-        df = df[required_columns].dropna().reset_index(drop=True)
+        df = df.dropna(subset=["source_text", "target_text"]).copy()
 
         df["source_text"] = df["source_text"].astype(str).str.strip()
         df["target_text"] = df["target_text"].astype(str).str.strip()
 
-        df = df[df["source_text"].str.len() > 0]
-        df = df[df["target_text"].str.len() > 0]
+        df = df[(df["source_text"] != "") & (df["target_text"] != "")]
+
+        if "domain" not in df.columns:
+            df["domain"] = ""
 
         if RETRIEVER_MAX_ROWS_50K is not None:
-            df = df.head(int(RETRIEVER_MAX_ROWS_50K)).copy()
+            df = df.head(RETRIEVER_MAX_ROWS_50K).copy()
 
-        if len(df) == 0:
-            raise ValueError("No valid training rows found for 50K retriever.")
+        self.train_df = df.reset_index(drop=True)
 
-        return df.reset_index(drop=True)
+        self.source_texts = self.train_df["source_text"].tolist()
+        self.target_texts = self.train_df["target_text"].tolist()
+        self.domains = self.train_df["domain"].fillna("").astype(str).tolist()
 
-    def build_index(self):
-        create_directories()
-        RETRIEVER_DIR_50K.mkdir(parents=True, exist_ok=True)
+        self.total_pairs = len(self.train_df)
 
-        self.memory_df = self.load_training_memory(TRAIN_FILE_50K)
+        if self.total_pairs == 0:
+            raise ValueError("No valid training pairs found for retriever construction.")
 
-        print("Step 27: Building 50K translation-memory retriever.")
-        print(f"Training pairs used : {len(self.memory_df)}")
-        print(f"Embedding model     : {self.model_name}")
-        print(f"Batch size          : {self.batch_size}")
-        print(f"Backend             : {self.backend}")
+        print(f"Training pairs loaded: {self.total_pairs}")
 
-        source_sentences = self.memory_df["source_text"].tolist()
+    def build_embeddings(self):
+        print("\nLoading multilingual sentence embedding model...")
+        print(f"Embedding model: {RETRIEVER_EMBEDDING_MODEL_50K}")
 
-        print("\nEncoding 50K training source sentences...")
+        model = SentenceTransformer(RETRIEVER_EMBEDDING_MODEL_50K)
 
-        embeddings = self.encoder.encode(
-            source_sentences,
-            batch_size=self.batch_size,
+        print("\nEncoding English source sentences...")
+        embeddings = model.encode(
+            self.source_texts,
+            batch_size=RETRIEVER_BATCH_SIZE_50K,
+            show_progress_bar=True,
             convert_to_numpy=True,
             normalize_embeddings=True,
-            show_progress_bar=True,
         )
 
         embeddings = embeddings.astype("float32")
+
         self.embeddings = embeddings
+        self.embedding_dim = embeddings.shape[1]
 
-        print(f"Embedding matrix shape: {embeddings.shape}")
+        print(f"Embedding matrix shape: {self.embeddings.shape}")
+        print(f"Embedding dimension   : {self.embedding_dim}")
 
-        if self.backend == "faiss":
-            dimension = embeddings.shape[1]
+    def build_faiss_index(self):
+        if self.embeddings is None:
+            raise ValueError("Embeddings are not available. Run build_embeddings() first.")
 
-            self.index = faiss.IndexFlatIP(dimension)
-            self.index.add(embeddings)
+        print("\nBuilding FAISS IndexFlatIP index...")
 
-            print("FAISS index built successfully.")
+        index = faiss.IndexFlatIP(self.embedding_dim)
+        index.add(self.embeddings)
 
-        else:
-            self.index = NearestNeighbors(
-                n_neighbors=min(10, len(self.memory_df)),
-                metric="cosine",
-                algorithm="brute",
-            )
+        self.faiss_index = index
 
-            self.index.fit(embeddings)
+        print("FAISS IndexFlatIP built successfully.")
+        print(f"Vectors indexed: {self.faiss_index.ntotal}")
 
-            print("Scikit-learn NearestNeighbors index built successfully.")
+    def build_sklearn_fallback_index(self):
+        if self.embeddings is None:
+            raise ValueError("Embeddings are not available. Run build_embeddings() first.")
 
-    def save(self):
-        if self.index is None or self.memory_df is None or self.embeddings is None:
-            raise RuntimeError("Index is not built. Run build_index() first.")
+        print("\nBuilding sklearn fallback nearest-neighbor index...")
+
+        n_neighbors = min(RETRIEVER_TEST_TOP_K_50K, len(self.embeddings))
+
+        sklearn_index = NearestNeighbors(
+            n_neighbors=n_neighbors,
+            metric="cosine",
+            algorithm="brute",
+        )
+
+        sklearn_index.fit(self.embeddings)
+
+        self.sklearn_index = sklearn_index
+
+        print("Sklearn fallback retriever built successfully.")
+
+    def save_retriever(self):
+        if self.faiss_index is None:
+            raise ValueError("FAISS index is not available.")
+
+        if self.sklearn_index is None:
+            raise ValueError("Sklearn fallback index is not available.")
 
         RETRIEVER_DIR_50K.mkdir(parents=True, exist_ok=True)
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+        print("\nSaving 50K retriever files...")
+
+        faiss.write_index(self.faiss_index, str(FAISS_INDEX_FILE_50K))
 
         memory_data = {
-            "backend": self.backend,
-            "model_name": self.model_name,
-            "memory_df": self.memory_df,
-            "embeddings": self.embeddings,
+            "source_texts": self.source_texts,
+            "target_texts": self.target_texts,
+            "domains": self.domains,
+            "embedding_model": RETRIEVER_EMBEDDING_MODEL_50K,
+            "embedding_dimension": self.embedding_dim,
+            "num_pairs": self.total_pairs,
+            "faiss_index_type": "IndexFlatIP",
+            "similarity": "normalized_inner_product",
         }
 
         with open(MEMORY_FILE_50K, "wb") as file:
             pickle.dump(memory_data, file)
 
-        if self.backend == "faiss":
-            faiss.write_index(self.index, str(FAISS_INDEX_FILE_50K))
-        else:
-            with open(SKLEARN_INDEX_FILE_50K, "wb") as file:
-                pickle.dump(self.index, file)
+        sklearn_data = {
+            "sklearn_index": self.sklearn_index,
+            "embeddings": self.embeddings,
+            "memory": memory_data,
+        }
 
-        print("\n50K retriever saved successfully.")
-        print(f"Memory file: {MEMORY_FILE_50K}")
+        with open(SKLEARN_INDEX_FILE_50K, "wb") as file:
+            pickle.dump(sklearn_data, file)
 
-        if self.backend == "faiss":
-            print(f"FAISS index: {FAISS_INDEX_FILE_50K}")
-        else:
-            print(f"Sklearn index: {SKLEARN_INDEX_FILE_50K}")
+        print("50K retriever saved successfully.")
+        print(f"Memory file : {MEMORY_FILE_50K}")
+        print(f"FAISS index : {FAISS_INDEX_FILE_50K}")
+        print(f"Sklearn file: {SKLEARN_INDEX_FILE_50K}")
 
-    def load(self):
-        if not MEMORY_FILE_50K.exists():
-            raise FileNotFoundError(
-                f"50K memory file not found:\n{MEMORY_FILE_50K}\n\n"
-                "Please build the 50K retriever first."
-            )
-
-        with open(MEMORY_FILE_50K, "rb") as file:
-            memory_data = pickle.load(file)
-
-        self.backend = memory_data["backend"]
-        self.model_name = memory_data["model_name"]
-        self.memory_df = memory_data["memory_df"]
-        self.embeddings = memory_data["embeddings"]
-
-        self.encoder = SentenceTransformer(self.model_name)
-
-        if self.backend == "faiss":
-            if not FAISS_INDEX_FILE_50K.exists():
-                raise FileNotFoundError(f"FAISS index file not found:\n{FAISS_INDEX_FILE_50K}")
-
-            self.index = faiss.read_index(str(FAISS_INDEX_FILE_50K))
-
-        else:
-            if not SKLEARN_INDEX_FILE_50K.exists():
-                raise FileNotFoundError(f"Sklearn index file not found:\n{SKLEARN_INDEX_FILE_50K}")
-
-            with open(SKLEARN_INDEX_FILE_50K, "rb") as file:
-                self.index = pickle.load(file)
-
-        print("50K retriever loaded successfully.")
-
-    def retrieve(self, query: str, top_k: int = 5):
-        if self.index is None or self.memory_df is None:
-            raise RuntimeError("Retriever not loaded. Run build_index() or load() first.")
-
-        query = str(query).strip()
-
-        if not query:
+    def test_retriever(self):
+        if self.faiss_index is None or self.embeddings is None:
+            print("Skipping retriever test because index or embeddings are unavailable.")
             return []
 
-        query_embedding = self.encoder.encode(
-            [query],
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-        ).astype("float32")
+        print("\nTesting retriever with sample training queries...")
 
-        top_k = min(top_k, len(self.memory_df))
+        sample_count = min(3, self.total_pairs)
+        test_results = []
 
-        results = []
+        for query_id in range(sample_count):
+            query_text = self.source_texts[query_id]
+            query_embedding = self.embeddings[query_id].reshape(1, -1)
 
-        if self.backend == "faiss":
-            scores, indices = self.index.search(query_embedding, top_k)
-
-            for score, idx in zip(scores[0], indices[0]):
-                results.append(
-                    {
-                        "source_text": self.memory_df.iloc[idx]["source_text"],
-                        "target_text": self.memory_df.iloc[idx]["target_text"],
-                        "domain": self.memory_df.iloc[idx]["domain"],
-                        "similarity_score": round(float(score), 4),
-                    }
-                )
-
-        else:
-            distances, indices = self.index.kneighbors(
+            scores, indices = self.faiss_index.search(
                 query_embedding,
-                n_neighbors=top_k,
+                RETRIEVER_TEST_TOP_K_50K,
             )
 
-            for distance, idx in zip(distances[0], indices[0]):
-                similarity = 1.0 - float(distance)
+            retrieved_items = []
 
-                results.append(
+            print("\nQuery:")
+            print(query_text)
+
+            for rank, (score, idx) in enumerate(zip(scores[0], indices[0]), start=1):
+                idx = int(idx)
+
+                retrieved_source = self.source_texts[idx]
+                retrieved_target = self.target_texts[idx]
+
+                retrieved_items.append(
                     {
-                        "source_text": self.memory_df.iloc[idx]["source_text"],
-                        "target_text": self.memory_df.iloc[idx]["target_text"],
-                        "domain": self.memory_df.iloc[idx]["domain"],
-                        "similarity_score": round(float(similarity), 4),
+                        "rank": rank,
+                        "index": idx,
+                        "score": float(score),
+                        "source_text": retrieved_source,
+                        "target_text": retrieved_target,
                     }
                 )
 
-        return results
+                print(f"  Rank {rank} | score={score:.4f}")
+                print(f"  Source: {retrieved_source}")
+                print(f"  Target: {retrieved_target}")
 
+            test_results.append(
+                {
+                    "query_id": query_id,
+                    "query": query_text,
+                    "retrieved": retrieved_items,
+                }
+            )
 
-def test_retriever_50k(retriever: TranslationMemoryRetriever50K):
-    print("\nTesting 50K retriever...")
+        return test_results
 
-    if TEST_FILE_50K.exists():
-        test_df = pd.read_csv(TEST_FILE_50K, encoding="utf-8-sig")
-        sample_queries = test_df["source_text"].dropna().astype(str).head(3).tolist()
-    else:
-        sample_queries = [
-            "The government announced a new policy.",
-            "Several trains were cancelled because of rain.",
-            "The patient was admitted to the hospital.",
-        ]
+    def save_log(self, test_results):
+        log_data = {
+            "step": "Step 27: Build 50K FAISS retriever",
+            "train_file": str(TRAIN_FILE_50K),
+            "retriever_dir": str(RETRIEVER_DIR_50K),
+            "faiss_index_file": str(FAISS_INDEX_FILE_50K),
+            "memory_file": str(MEMORY_FILE_50K),
+            "sklearn_index_file": str(SKLEARN_INDEX_FILE_50K),
+            "embedding_model": RETRIEVER_EMBEDDING_MODEL_50K,
+            "embedding_dimension": self.embedding_dim,
+            "training_pairs": self.total_pairs,
+            "batch_size": RETRIEVER_BATCH_SIZE_50K,
+            "retriever_max_rows": RETRIEVER_MAX_ROWS_50K,
+            "faiss_index_type": "IndexFlatIP",
+            "similarity": "normalized_inner_product",
+            "runtime_seconds": self.runtime_seconds,
+            "sample_retrieval_results": test_results,
+        }
 
-    for query in sample_queries:
-        results = retriever.retrieve(query, top_k=3)
+        with open(self.build_log_file, "w", encoding="utf-8") as file:
+            json.dump(log_data, file, indent=4, ensure_ascii=False)
 
-        print("\n==================================================")
-        print(f"Query: {query}")
+        print(f"\nBuild log saved: {self.build_log_file}")
 
-        for i, item in enumerate(results, start=1):
-            print(f"\nResult {i}")
-            print(f"Similarity: {item['similarity_score']}")
-            print(f"Source    : {item['source_text']}")
-            print(f"Target    : {item['target_text']}")
-            print(f"Domain    : {item['domain']}")
+    def run(self):
+        create_directories()
+        RETRIEVER_DIR_50K.mkdir(parents=True, exist_ok=True)
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+        print("Step 27: 50K FAISS retriever construction started.")
+
+        start_time = time.time()
+
+        self.load_training_data()
+        self.build_embeddings()
+        self.build_faiss_index()
+        self.build_sklearn_fallback_index()
+        self.save_retriever()
+
+        test_results = self.test_retriever()
+
+        self.runtime_seconds = round(time.time() - start_time, 2)
+
+        self.save_log(test_results)
+
+        print("\n50K retriever construction completed successfully.")
+        print("\nSummary:")
+        print(f"Training pairs loaded : {self.total_pairs}")
+        print(f"Embedding matrix shape: {self.embeddings.shape}")
+        print(f"Embedding dimension   : {self.embedding_dim}")
+        print(f"FAISS index file      : {FAISS_INDEX_FILE_50K}")
+        print(f"Memory file           : {MEMORY_FILE_50K}")
+        print(f"Runtime seconds       : {self.runtime_seconds}")
 
 
 def run_build_retriever_50k():
-    retriever = TranslationMemoryRetriever50K()
-    retriever.build_index()
-    retriever.save()
-    test_retriever_50k(retriever)
+    builder = BuildRetriever50K()
+    builder.run()
 
 
 if __name__ == "__main__":
