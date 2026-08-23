@@ -1,284 +1,345 @@
-# src/train_large_lora_nllb.py
+# src/train_lora_50k_nllb.py
 
-import numpy as np
+import json
+import time
+
 import pandas as pd
 import torch
-import evaluate
-
 from datasets import Dataset
+from peft import LoraConfig, TaskType, get_peft_model
 from transformers import (
-    AutoTokenizer,
     AutoModelForSeq2SeqLM,
+    AutoTokenizer,
     DataCollatorForSeq2Seq,
     Seq2SeqTrainer,
     Seq2SeqTrainingArguments,
 )
 
-from peft import LoraConfig, get_peft_model, TaskType
-
 from src.config import (
-    TRAIN_LARGE_FILE,
-    VALID_LARGE_FILE,
+    TRAIN_FILE_50K,
+    VALID_FILE_50K,
     BASELINE_MODEL_NAME,
     SOURCE_LANG_CODE,
     TARGET_LANG_CODE,
     MAX_SOURCE_LENGTH,
     MAX_TARGET_LENGTH,
-    LARGE_LORA_MODEL_DIR,
-    LARGE_LORA_ADAPTER_DIR,
-    LARGE_LORA_TRAIN_EPOCHS,
-    LARGE_LORA_TRAIN_BATCH_SIZE,
-    LARGE_LORA_EVAL_BATCH_SIZE,
-    LARGE_LORA_GRADIENT_ACCUMULATION_STEPS,
-    LARGE_LORA_LEARNING_RATE,
-    LARGE_LORA_MAX_TRAIN_SAMPLES,
-    LARGE_LORA_MAX_VALID_SAMPLES,
-    LORA_R,
-    LORA_ALPHA,
-    LORA_DROPOUT,
+    LORA_MODEL_DIR_50K,
+    LORA_ADAPTER_DIR_50K,
+    LORA_TRAIN_EPOCHS_50K,
+    LORA_TRAIN_BATCH_SIZE_50K,
+    LORA_EVAL_BATCH_SIZE_50K,
+    LORA_GRADIENT_ACCUMULATION_STEPS_50K,
+    LORA_LEARNING_RATE_50K,
+    LORA_MAX_TRAIN_SAMPLES_50K,
+    LORA_MAX_VALID_SAMPLES_50K,
+    LORA_R_50K,
+    LORA_ALPHA_50K,
+    LORA_DROPOUT_50K,
+    LORA_TRAINING_LOG_DIR_50K,
+    OUTPUT_DIR,
     create_directories,
 )
 
 
-def load_large_dataset(csv_file, max_samples=None):
-    if not csv_file.exists():
-        raise FileNotFoundError(f"File not found: {csv_file}")
+# Local constants because the original experiment config did not define these separately.
+LORA_WEIGHT_DECAY_50K = 0.01
+LORA_SAVE_TOTAL_LIMIT_50K = 2
+LORA_LOGGING_STEPS_50K = 50
 
-    df = pd.read_csv(csv_file, encoding="utf-8-sig")
-
-    required_columns = ["source_text", "target_text"]
-    missing = [col for col in required_columns if col not in df.columns]
-
-    if missing:
-        raise ValueError(
-            f"Missing required columns: {missing}. "
-            "Required columns are source_text and target_text."
-        )
-
-    df = df[required_columns].dropna().reset_index(drop=True)
-
-    df["source_text"] = df["source_text"].astype(str).str.strip()
-    df["target_text"] = df["target_text"].astype(str).str.strip()
-
-    df = df[df["source_text"].str.len() > 0]
-    df = df[df["target_text"].str.len() > 0]
-
-    if max_samples is not None:
-        df = df.head(int(max_samples)).copy()
-
-    return Dataset.from_pandas(df.reset_index(drop=True))
+LORA_TRAINING_REPORT_50K = OUTPUT_DIR / "lora_50k_training_report.json"
 
 
-def apply_lora_to_model(model):
+class TrainLoRA50K:
     """
-    Applies LoRA adapters to the NLLB seq2seq model.
+    Step 29: LoRA fine-tuning of NLLB on the 50K English-Kannada corpus.
+
+    Inputs:
+        data/processed/train_50k.csv
+        data/processed/valid_50k.csv
+
+    Outputs:
+        models/lora_50k_nllb_model/
+        models/lora_50k_nllb_model/adapter/
+        outputs/lora_50k_training_report.json
+        outputs/lora_50k_training_logs/
     """
 
-    lora_config = LoraConfig(
-        task_type=TaskType.SEQ_2_SEQ_LM,
-        r=LORA_R,
-        lora_alpha=LORA_ALPHA,
-        lora_dropout=LORA_DROPOUT,
-        target_modules=["q_proj", "v_proj"],
-        bias="none",
-    )
-
-    model = get_peft_model(model, lora_config)
-
-    print("\nLoRA configuration applied.")
-    model.print_trainable_parameters()
-
-    return model
-
-
-def build_training_args(device):
-    """
-    Handles version differences in Transformers:
-    some versions use eval_strategy, older versions use evaluation_strategy.
-    """
-
-    common_args = dict(
-        output_dir=str(LARGE_LORA_MODEL_DIR),
-        save_strategy="epoch",
-        learning_rate=LARGE_LORA_LEARNING_RATE,
-        per_device_train_batch_size=LARGE_LORA_TRAIN_BATCH_SIZE,
-        per_device_eval_batch_size=LARGE_LORA_EVAL_BATCH_SIZE,
-        gradient_accumulation_steps=LARGE_LORA_GRADIENT_ACCUMULATION_STEPS,
-        weight_decay=0.01,
-        save_total_limit=2,
-        num_train_epochs=LARGE_LORA_TRAIN_EPOCHS,
-        predict_with_generate=True,
-        generation_max_length=MAX_TARGET_LENGTH,
-        generation_num_beams=4,
-        fp16=True if device == "cuda" else False,
-        logging_dir="outputs/large_lora_training_logs",
-        logging_steps=25,
-        report_to="none",
-    )
-
-    try:
-        return Seq2SeqTrainingArguments(
-            eval_strategy="epoch",
-            **common_args,
-        )
-    except TypeError:
-        return Seq2SeqTrainingArguments(
-            evaluation_strategy="epoch",
-            **common_args,
+    def __init__(self):
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.gpu_name = (
+            torch.cuda.get_device_name(0)
+            if torch.cuda.is_available()
+            else "CPU"
         )
 
+        self.tokenizer = None
+        self.model = None
 
-def train_large_lora_nllb():
-    create_directories()
+        self.train_dataset = None
+        self.valid_dataset = None
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.train_rows = 0
+        self.valid_rows = 0
 
-    print("Step 15: Large-data LoRA fine-tuning started.")
-    print(f"Base model      : {BASELINE_MODEL_NAME}")
-    print(f"Device selected : {device}")
-    print(f"Source language : {SOURCE_LANG_CODE}")
-    print(f"Target language : {TARGET_LANG_CODE}")
+        self.trainable_params = 0
+        self.total_params = 0
+        self.trainable_percent = 0.0
 
-    if device == "cpu":
-        print(
-            "\nWARNING: CUDA GPU not detected. "
-            "LoRA training will still work, but it may take considerable time on CPU.\n"
+    @staticmethod
+    def load_dataframe(file_path, split_name):
+        if not file_path.exists():
+            raise FileNotFoundError(
+                f"{split_name} file not found:\n{file_path}\n\n"
+                "Please run Step 26 first: prepare_split_50k.py"
+            )
+
+        df = pd.read_csv(file_path, encoding="utf-8-sig")
+
+        required_columns = ["source_text", "target_text"]
+        missing = [col for col in required_columns if col not in df.columns]
+
+        if missing:
+            raise ValueError(
+                f"Missing required columns in {split_name}: {missing}\n"
+                f"Detected columns: {list(df.columns)}"
+            )
+
+        df = df.dropna(subset=["source_text", "target_text"]).copy()
+
+        df["source_text"] = df["source_text"].astype(str).str.strip()
+        df["target_text"] = df["target_text"].astype(str).str.strip()
+
+        df = df[(df["source_text"] != "") & (df["target_text"] != "")]
+
+        return df.reset_index(drop=True)
+
+    def load_data(self):
+        print("Loading 50K train and validation data...")
+
+        train_df = self.load_dataframe(TRAIN_FILE_50K, "training")
+        valid_df = self.load_dataframe(VALID_FILE_50K, "validation")
+
+        if LORA_MAX_TRAIN_SAMPLES_50K is not None:
+            train_df = train_df.head(LORA_MAX_TRAIN_SAMPLES_50K).copy()
+
+        if LORA_MAX_VALID_SAMPLES_50K is not None:
+            valid_df = valid_df.head(LORA_MAX_VALID_SAMPLES_50K).copy()
+
+        self.train_rows = len(train_df)
+        self.valid_rows = len(valid_df)
+
+        print(f"Training records   : {self.train_rows}")
+        print(f"Validation records : {self.valid_rows}")
+
+        self.train_dataset = Dataset.from_pandas(
+            train_df[["source_text", "target_text"]],
+            preserve_index=False,
         )
 
-    train_dataset = load_large_dataset(
-        TRAIN_LARGE_FILE,
-        max_samples=LARGE_LORA_MAX_TRAIN_SAMPLES,
-    )
+        self.valid_dataset = Dataset.from_pandas(
+            valid_df[["source_text", "target_text"]],
+            preserve_index=False,
+        )
 
-    valid_dataset = load_large_dataset(
-        VALID_LARGE_FILE,
-        max_samples=LARGE_LORA_MAX_VALID_SAMPLES,
-    )
+    def load_model_and_tokenizer(self):
+        print("\nLoading NLLB base model and tokenizer...")
+        print(f"Base model : {BASELINE_MODEL_NAME}")
+        print(f"Device     : {self.device}")
+        print(f"GPU        : {self.gpu_name}")
 
-    print(f"Training records used   : {len(train_dataset)}")
-    print(f"Validation records used : {len(valid_dataset)}")
+        self.tokenizer = AutoTokenizer.from_pretrained(BASELINE_MODEL_NAME)
+        self.tokenizer.src_lang = SOURCE_LANG_CODE
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        BASELINE_MODEL_NAME,
-        src_lang=SOURCE_LANG_CODE,
-    )
+        self.model = AutoModelForSeq2SeqLM.from_pretrained(BASELINE_MODEL_NAME)
 
-    model = AutoModelForSeq2SeqLM.from_pretrained(BASELINE_MODEL_NAME)
-    model = apply_lora_to_model(model)
-    model.to(device)
+        lora_config = LoraConfig(
+            r=LORA_R_50K,
+            lora_alpha=LORA_ALPHA_50K,
+            lora_dropout=LORA_DROPOUT_50K,
+            bias="none",
+            task_type=TaskType.SEQ_2_SEQ_LM,
+            target_modules=["q_proj", "v_proj"],
+        )
 
-    forced_bos_token_id = tokenizer.convert_tokens_to_ids(TARGET_LANG_CODE)
+        self.model = get_peft_model(self.model, lora_config)
+        self.model.to(self.device)
 
-    if forced_bos_token_id is None:
-        raise ValueError(f"Invalid target language code: {TARGET_LANG_CODE}")
+        self.count_trainable_parameters()
 
-    def preprocess_function(batch):
-        tokenizer.src_lang = SOURCE_LANG_CODE
+        print("\nLoRA model initialized.")
+        print(f"Trainable parameters : {self.trainable_params:,}")
+        print(f"Total parameters     : {self.total_params:,}")
+        print(f"Trainable %          : {self.trainable_percent:.4f}%")
 
-        model_inputs = tokenizer(
-            batch["source_text"],
+    def count_trainable_parameters(self):
+        trainable = 0
+        total = 0
+
+        for _, param in self.model.named_parameters():
+            total += param.numel()
+            if param.requires_grad:
+                trainable += param.numel()
+
+        self.trainable_params = trainable
+        self.total_params = total
+        self.trainable_percent = 100 * trainable / total
+
+    def preprocess_batch(self, examples):
+        self.tokenizer.src_lang = SOURCE_LANG_CODE
+
+        model_inputs = self.tokenizer(
+            examples["source_text"],
             max_length=MAX_SOURCE_LENGTH,
             truncation=True,
             padding=False,
         )
 
-        labels = tokenizer(
-            text_target=batch["target_text"],
+        labels = self.tokenizer(
+            text_target=examples["target_text"],
             max_length=MAX_TARGET_LENGTH,
             truncation=True,
             padding=False,
         )
 
         model_inputs["labels"] = labels["input_ids"]
+
         return model_inputs
 
-    print("\nTokenizing large training dataset...")
+    def tokenize_datasets(self):
+        print("\nTokenizing train and validation datasets...")
 
-    tokenized_train = train_dataset.map(
-        preprocess_function,
-        batched=True,
-        remove_columns=train_dataset.column_names,
-    )
-
-    tokenized_valid = valid_dataset.map(
-        preprocess_function,
-        batched=True,
-        remove_columns=valid_dataset.column_names,
-    )
-
-    sacrebleu = evaluate.load("sacrebleu")
-
-    def compute_metrics(eval_preds):
-        preds, labels = eval_preds
-
-        if isinstance(preds, tuple):
-            preds = preds[0]
-
-        decoded_preds = tokenizer.batch_decode(
-            preds,
-            skip_special_tokens=True,
+        self.train_dataset = self.train_dataset.map(
+            self.preprocess_batch,
+            batched=True,
+            remove_columns=self.train_dataset.column_names,
+            desc="Tokenizing training split",
         )
 
-        labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
-
-        decoded_labels = tokenizer.batch_decode(
-            labels,
-            skip_special_tokens=True,
+        self.valid_dataset = self.valid_dataset.map(
+            self.preprocess_batch,
+            batched=True,
+            remove_columns=self.valid_dataset.column_names,
+            desc="Tokenizing validation split",
         )
 
-        decoded_preds = [pred.strip() for pred in decoded_preds]
-        decoded_labels = [[label.strip()] for label in decoded_labels]
+        print("Tokenization completed.")
 
-        result = sacrebleu.compute(
-            predictions=decoded_preds,
-            references=decoded_labels,
+    def train(self):
+        print("\nStarting 50K LoRA fine-tuning...")
+
+        LORA_MODEL_DIR_50K.mkdir(parents=True, exist_ok=True)
+        LORA_ADAPTER_DIR_50K.mkdir(parents=True, exist_ok=True)
+        LORA_TRAINING_LOG_DIR_50K.mkdir(parents=True, exist_ok=True)
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+        data_collator = DataCollatorForSeq2Seq(
+            tokenizer=self.tokenizer,
+            model=self.model,
+            padding=True,
         )
 
-        return {"bleu": round(result["score"], 4)}
+        training_args = Seq2SeqTrainingArguments(
+            output_dir=str(LORA_MODEL_DIR_50K),
+            num_train_epochs=LORA_TRAIN_EPOCHS_50K,
+            per_device_train_batch_size=LORA_TRAIN_BATCH_SIZE_50K,
+            per_device_eval_batch_size=LORA_EVAL_BATCH_SIZE_50K,
+            gradient_accumulation_steps=LORA_GRADIENT_ACCUMULATION_STEPS_50K,
+            learning_rate=LORA_LEARNING_RATE_50K,
+            weight_decay=LORA_WEIGHT_DECAY_50K,
+            logging_dir=str(LORA_TRAINING_LOG_DIR_50K),
+            logging_steps=LORA_LOGGING_STEPS_50K,
+            save_strategy="epoch",
+            eval_strategy="epoch",
+            save_total_limit=LORA_SAVE_TOTAL_LIMIT_50K,
+            predict_with_generate=False,
+            fp16=torch.cuda.is_available(),
+            report_to="none",
+            remove_unused_columns=False,
+        )
 
-    data_collator = DataCollatorForSeq2Seq(
-        tokenizer=tokenizer,
-        model=model,
-    )
-
-    training_args = build_training_args(device)
-
-    try:
         trainer = Seq2SeqTrainer(
-            model=model,
+            model=self.model,
             args=training_args,
-            train_dataset=tokenized_train,
-            eval_dataset=tokenized_valid,
-            processing_class=tokenizer,
+            train_dataset=self.train_dataset,
+            eval_dataset=self.valid_dataset,
+            tokenizer=self.tokenizer,
             data_collator=data_collator,
-            compute_metrics=compute_metrics,
-        )
-    except TypeError:
-        trainer = Seq2SeqTrainer(
-            model=model,
-            args=training_args,
-            train_dataset=tokenized_train,
-            eval_dataset=tokenized_valid,
-            tokenizer=tokenizer,
-            data_collator=data_collator,
-            compute_metrics=compute_metrics,
         )
 
-    print("\nStarting large LoRA fine-tuning...")
-    trainer.train()
+        start_time = time.time()
 
-    print("\nSaving LoRA adapter and tokenizer...")
+        train_result = trainer.train()
+        eval_result = trainer.evaluate()
 
-    LARGE_LORA_MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    LARGE_LORA_ADAPTER_DIR.mkdir(parents=True, exist_ok=True)
+        runtime_seconds = round(time.time() - start_time, 2)
 
-    model.save_pretrained(str(LARGE_LORA_ADAPTER_DIR))
-    tokenizer.save_pretrained(str(LARGE_LORA_MODEL_DIR))
+        print("\nSaving LoRA adapter and tokenizer...")
 
-    print("\nLarge-data LoRA fine-tuning completed successfully.")
-    print(f"LoRA adapter saved at : {LARGE_LORA_ADAPTER_DIR}")
-    print(f"Tokenizer saved at    : {LARGE_LORA_MODEL_DIR}")
+        self.model.save_pretrained(LORA_ADAPTER_DIR_50K)
+        self.tokenizer.save_pretrained(LORA_MODEL_DIR_50K)
+
+        report = {
+            "step": "Step 29: 50K LoRA fine-tuning",
+            "base_model": BASELINE_MODEL_NAME,
+            "source_lang_code": SOURCE_LANG_CODE,
+            "target_lang_code": TARGET_LANG_CODE,
+            "train_file": str(TRAIN_FILE_50K),
+            "valid_file": str(VALID_FILE_50K),
+            "train_records": self.train_rows,
+            "validation_records": self.valid_rows,
+            "epochs": LORA_TRAIN_EPOCHS_50K,
+            "train_batch_size": LORA_TRAIN_BATCH_SIZE_50K,
+            "eval_batch_size": LORA_EVAL_BATCH_SIZE_50K,
+            "gradient_accumulation_steps": LORA_GRADIENT_ACCUMULATION_STEPS_50K,
+            "learning_rate": LORA_LEARNING_RATE_50K,
+            "weight_decay": LORA_WEIGHT_DECAY_50K,
+            "lora_rank": LORA_R_50K,
+            "lora_alpha": LORA_ALPHA_50K,
+            "lora_dropout": LORA_DROPOUT_50K,
+            "trainable_parameters": self.trainable_params,
+            "total_parameters": self.total_params,
+            "trainable_percent": round(self.trainable_percent, 4),
+            "device": self.device,
+            "gpu": self.gpu_name,
+            "runtime_seconds": runtime_seconds,
+            "train_metrics": train_result.metrics,
+            "eval_metrics": eval_result,
+            "adapter_dir": str(LORA_ADAPTER_DIR_50K),
+            "tokenizer_dir": str(LORA_MODEL_DIR_50K),
+            "training_log_dir": str(LORA_TRAINING_LOG_DIR_50K),
+        }
+
+        with open(LORA_TRAINING_REPORT_50K, "w", encoding="utf-8") as file:
+            json.dump(report, file, indent=4, ensure_ascii=False)
+
+        print("\nLoRA fine-tuning completed successfully.")
+        print("\nSummary:")
+        print(f"GPU                  : {self.gpu_name}")
+        print(f"Training records     : {self.train_rows}")
+        print(f"Validation records   : {self.valid_rows}")
+        print(f"Epochs               : {LORA_TRAIN_EPOCHS_50K}")
+        print(f"Trainable parameters : {self.trainable_params:,}")
+        print(f"Trainable %          : {self.trainable_percent:.4f}%")
+        print(f"Runtime seconds      : {runtime_seconds}")
+        print(f"Adapter saved        : {LORA_ADAPTER_DIR_50K}")
+        print(f"Tokenizer saved      : {LORA_MODEL_DIR_50K}")
+        print(f"Report saved         : {LORA_TRAINING_REPORT_50K}")
+
+    def run(self):
+        create_directories()
+
+        print("Step 29: 50K LoRA fine-tuning started.")
+
+        self.load_data()
+        self.load_model_and_tokenizer()
+        self.tokenize_datasets()
+        self.train()
+
+
+def run_train_lora_50k_nllb():
+    trainer = TrainLoRA50K()
+    trainer.run()
 
 
 if __name__ == "__main__":
-    train_large_lora_nllb()
+    run_train_lora_50k_nllb()
