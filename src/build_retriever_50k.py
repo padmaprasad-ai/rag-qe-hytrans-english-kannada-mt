@@ -10,7 +10,7 @@ from sklearn.neighbors import NearestNeighbors
 from src.config import (
     TRAIN_FILE_50K,
     TEST_FILE_50K,
-    RETRIEVER_DIR_50K,
+    RETRIEVER_TEST_TOP_K_50K = 3,
     FAISS_INDEX_FILE_50K,
     MEMORY_FILE_50K,
     SKLEARN_INDEX_FILE_50K,
