@@ -1,32 +1,75 @@
-# Data files
-data/raw/
-data/processed/
-
-# Model files
-models/
-*.bin
-*.safetensors
-*.pt
-*.pth
-*.ckpt
-*.index
-*.pkl
-
-# Large outputs
-outputs/
-!outputs/.gitkeep
-
-# Python
+# ==========================
+# Python cache files
+# ==========================
 __pycache__/
-*.pyc
-.venv/
-venv/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
 .ipynb_checkpoints/
 
-# OS / IDE
-.DS_Store
+# ==========================
+# Virtual environments
+# ==========================
+.venv/
+venv/
+env/
+ENV/
+
+# ==========================
+# IDE files
+# ==========================
 .idea/
 .vscode/
 
-# Logs
+# ==========================
+# OS files
+# ==========================
+.DS_Store
+Thumbs.db
+
+# ==========================
+# Raw and processed datasets
+# ==========================
+data/raw/
+data/processed/
+*.csv
+
+# Keep result summary CSVs if already stored under results or figures
+!results/*.csv
+!figures/*.csv
+
+# ==========================
+# Model checkpoints and adapters
+# ==========================
+models/
+checkpoints/
+*.bin
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+
+# ==========================
+# FAISS and retriever files
+# ==========================
+*.index
+*.faiss
+*.pkl
+*.pickle
+
+# ==========================
+# Output artifacts
+# ==========================
+outputs/
+logs/
+runs/
+wandb/
+
+# ==========================
+# Temporary files
+# ==========================
+tmp/
+temp/
 *.log
