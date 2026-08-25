@@ -1,8 +1,8 @@
 # RAG-QE-HyTrans: English–Kannada Low-Resource Machine Translation
 
-This repository contains the source code, configuration files, result summaries, figures, and reproducibility documentation for the paper:
+This repository contains the source code, configuration files, result summaries, figures, and reproducibility documentation:
 
-**RAG-QE-HyTrans: A Quality-Aware Retrieval-Augmented Hybrid Framework for Low-Resource English–Kannada Machine Translation**
+
 
 ## Overview
 
