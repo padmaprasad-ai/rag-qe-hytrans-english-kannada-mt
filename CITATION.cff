@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+title: "RAG-QE-HyTrans: A Quality-Aware Retrieval-Augmented Hybrid Framework for Low-Resource English-Kannada Machine Translation"
+message: "If you use this code, configuration, results, or figures, please cite the associated paper and this repository."
+type: software
+
+authors:
+  - family-names: "Prasad"
+    given-names: "Padma"
+
+repository-code: "https://github.com/padmaprasad-ai/rag-qe-hytrans-english-kannada-mt"
+
+abstract: >
+  This repository contains the reproducibility package for RAG-QE-HyTrans,
+  a quality-aware retrieval-augmented hybrid framework for low-resource
+  English-Kannada machine translation. The framework combines pretrained
+  NLLB translation, LoRA-based parameter-efficient adaptation, FAISS-based
+  semantic translation-memory retrieval, validation-based threshold selection,
+  and reference-free quality-aware candidate selection.
+
+keywords:
+  - low-resource machine translation
+  - English-Kannada translation
+  - NLLB
+  - LoRA
+  - retrieval-augmented generation
+  - FAISS
+  - translation memory
+  - quality estimation
+
+license: MIT
+version: "1.0.0"
+date-released: "2026-08-25"
